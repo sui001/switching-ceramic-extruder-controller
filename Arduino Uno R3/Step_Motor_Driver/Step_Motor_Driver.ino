@@ -54,7 +54,7 @@ int dir_LIGHT = 4;
  
 // Variables
  
-int pd = 500;       // Pulse Delay period
+int pd = 5000;       // Pulse Delay period
 boolean setdir = LOW; // Set Direction
 boolean setEN = LOW; // Set Direction
  
