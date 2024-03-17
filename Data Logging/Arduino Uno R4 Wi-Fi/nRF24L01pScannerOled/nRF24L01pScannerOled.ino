@@ -12,9 +12,9 @@
 // For SPI devices, Arduino can communicated with them when the corresponding Chip Select pin is low, which means the default will be high.
 // Procedure will be: CS->low, communicate, CS->high 
 
-// !!!!!Currently SD card reader is conflict with nRF24L01 module, need more investigation.
-// most likely is the SD lib/SPI lib are conflict with the SPI operation of nRF24L01, pay more attention to timer related code.
-// Seperate test on SD card and nRF24L01 are both passed
+// update: the SD lib will occupy MISO pin, therefore conflict with default nRF24L01 module
+// Fortunately, the given code of the nRF24L01 module uses the software SPI instead of the hardware SPI, 
+// and bit-banging can be used to assign all SPI pins directly to any digital pins without relying on the hardware SPI 
 
 #include "SSD1X06.h"
 
@@ -28,9 +28,9 @@
  * 2 VCC ---- 3.3V  Note: 5V on VCC will destroy module (but other pins are 5V tolerant)
  * 3 CE ----- D9
  * 4 CSN ---- D10
- * 5 SCK ---- D13 (SCK)
- * 6 MOSI --- D11 (MOSI)
- * 7 MISO --- D12 (MISO)
+ * 5 SCK ---- D2 (BB_SCK)
+ * 6 MOSI --- D3 (BB_MOSI)
+ * 7 MISO --- D4 (BB_MISO)
  * 8 IRQ ---- not connected
  */
 
@@ -84,6 +84,10 @@
 #define MISO_pin 12
 #define SCK_pin 13
 
+#define BB_MISO_pin 4
+#define BB_MOSI_pin 3
+#define BB_SCK_pin 2
+
 #define SD_Reader_CS_pin 8
 
 // SPI operation macro
@@ -96,8 +100,15 @@
 #define MISO_on (digitalRead(MISO_pin) == HIGH)  // input
 #define SCK_on digitalWrite(SCK_pin, HIGH)
 #define SCK_off digitalWrite(SCK_pin, LOW)
+
 #define SD_Reader_CS_on digitalWrite(SD_Reader_CS_pin, HIGH)
 #define SD_Reader_CS_off digitalWrite(SD_Reader_CS_pin, LOW)
+
+#define BB_MISO_on (digitalRead(BB_MISO_pin) == HIGH)
+#define BB_MOSI_on digitalWrite(BB_MOSI_pin, HIGH)
+#define BB_MOSI_off digitalWrite(BB_MOSI_pin, LOW)
+#define BB_SCK_on digitalWrite(BB_SCK_pin, HIGH)
+#define BB_SCK_off digitalWrite(BB_SCK_pin, LOW)
 
 
 // nRF24 Register map
@@ -203,15 +214,19 @@ void setup() {
   pinMode(CE_pin, OUTPUT);
   pinMode(MISO_pin, INPUT);
 
+  pinMode(BB_MISO_pin, INPUT);
+  pinMode(BB_MOSI_pin, OUTPUT);
+  pinMode(BB_SCK_pin, OUTPUT);
+
   CS_on;
   CE_on;
-  MOSI_on;
-  SCK_on;
+  BB_MOSI_on;
+  BB_SCK_on;
   delay(70);
   CS_off;
   CE_off;
-  MOSI_off;
-  SCK_off;
+  BB_MOSI_off;
+  BB_SCK_off;
   delay(100);
   CS_on;
   delay(10);
@@ -353,22 +368,22 @@ void loop() {
 uint8_t _spi_write(uint8_t command) {
   uint8_t result = 0;
   uint8_t n = 8;
-  SCK_off;
-  MOSI_off;
+  BB_SCK_off;
+  BB_MOSI_off;
   while (n--) {
     if (command & 0x80)
-      MOSI_on;
+      BB_MOSI_on;
     else
-      MOSI_off;
-    if (MISO_on)
+      BB_MOSI_off;
+    if (BB_MISO_on)
       result |= 0x01;
-    SCK_on;
+    BB_SCK_on;
     __asm__ __volatile__("nop");
-    SCK_off;
+    BB_SCK_off;
     command = command << 1;
     result = result << 1;
   }
-  MOSI_on;
+  BB_MOSI_on;
   return result;
 }
 
@@ -383,16 +398,16 @@ void _spi_write_address(uint8_t address, uint8_t data) {
 uint8_t _spi_read() {
   uint8_t result = 0;
   uint8_t i;
-  MOSI_off;
+  BB_MOSI_off;
   __asm__ __volatile__("nop");
   for (i = 0; i < 8; i++) {
-    if (MISO_on)  // if MISO is HIGH
+    if (BB_MISO_on)  // if BB_MISO is HIGH
       result = (result << 1) | 0x01;
     else
       result = result << 1;
-    SCK_on;
+    BB_SCK_on;
     __asm__ __volatile__("nop");
-    SCK_off;
+    BB_SCK_off;
     __asm__ __volatile__("nop");
   }
   return result;
