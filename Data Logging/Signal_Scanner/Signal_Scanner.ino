@@ -16,10 +16,31 @@
 // Fortunately, the given code of the nRF24L01 module uses the software SPI instead of the hardware SPI, 
 // and bit-banging can be used to assign all SPI pins directly to any digital pins without relying on the hardware SPI 
 
-#include "SSD1X06.h"
+// update: use folder to split different data, WARNING: the sd card is FAT32 format, the file name can only be limited to 8 byte + dot + 3 byte, which is XXXXXXXX.XXX
+// current limitation of the software: 
+// 1. file name for data logging is xxxxMxxS.CSV, theoretically limit is 9999MxxS, which is about 6.9 days, can change to mmmmm_ss.CSV or hhhhmmss.CSV, can increase the limit significantly
+// 2. data logging rate is 1 file/30 seconds, theoretically limit of file amount in one folder is 65532, which is about 22.7 days
+// 3. millis() will be overflow by about 49.7 days. (https://www.arduino.cc/reference/en/language/functions/time/millis/)
+// 4. max sd card size is 32GB, average file size is 30KB, fill all sd card space will take about 370.3 days
 
-#include <SPI.h>
-#include <SD.h>
+// due to the delay of writing to a sd card, it is possible that the entries in the file record are discontinuous, that is, adjacent entries are longer than 1 second
+// due to the insufficent amount of memory in arduino uno r4, the sd card is heavily used over 2 time per minute, please keep an eye on the status of sd card, replace it if needed.
+
+// For future development, can use Real Time Clock to match the time with real world, instead of relative time
+
+// udpate: add uno r4 matrix led support, with error code display/other issues notify
+// ---------- upper 5 lines ----------
+// OK: no error
+// E00: during init and setup, if constantly display, then code failed to complete setup procedure
+// E01: sd card error
+// ---------- lower 3 lines ----------
+// use arrow icon to display the progress of scansPerPeriod. display from left to right, with 10 different positions
+// if sd card ok, all light will turn on before sd card write, turn off after sd card write done. avoid unplug/turn off power when lights are on.
+// if sd card is not ok, the line of arrow will be dashed line 
+
+// update: force file name as xxxxMxxS.CSV, better format for data reading.
+
+// update: force file name as DATA.CSV, combine all data into one file for easier reading.
 
 /* nRF24L01+ module connections
  *  
@@ -64,6 +85,16 @@
  * 5 MOSI --- D11 (MOSI)
  * 6 MISO --- D12 (MISO)
  */
+
+
+#include "SSD1X06.h"
+
+#include <SPI.h>
+#include <SD.h>
+
+#include <ArduinoJson.h>
+
+#include "Arduino_LED_Matrix.h"
 
 // param
 #define DEBUG_SERIAL_OUTPUT true
@@ -183,7 +214,6 @@ enum TXRX_State {
 };
 
 // global var
-
 uint16_t signalStrength[CHANNELS];  // smooths signal strength with numerical range 0 - 0x7FFF
 
 const int scansPerPeriod = 30;
@@ -193,12 +223,26 @@ int scanIndex = 0; // from 0 to scansPerPeriod - 1
 unsigned long lastScanTime = 0;
 bool mem_record_flag = false;
 
+int folderNumber = 1; // global folder number, default 1
+bool sd_ready = false;
+
+ArduinoLEDMatrix matrix;
+uint32_t frame[] = {
+  0xe77855e5,
+  0x5855e770,
+  0x00000000
+};
+
 
 void setup() {
   //init serial debug if needed
   if (DEBUG_SERIAL_OUTPUT) {
     Serial.begin(9600);
   }
+
+  matrix.begin();
+  matrix.loadFrame(frame);
+  delay(500);
 
   //init oled display
   SSD1X06::start();
@@ -237,24 +281,7 @@ void setup() {
   NRF24L01_WriteReg(NRF24L01_01_EN_AA, 0x00);     // switch off Shockburst mode
   NRF24L01_WriteReg(NRF24L01_06_RF_SETUP, 0x0F);  // write default value to setup register
   NRF24L01_SetTxRxMode(RX_EN);                    // switch to receive mode
-
-
-  // init sd card reader
-  pinMode(SD_Reader_CS_pin, OUTPUT);
-  // SD_Reader_CS_on;
-  // SD_Reader_CS_off;
-
-  if (!SD.begin(SD_Reader_CS_pin)) {
-    if (DEBUG_SERIAL_OUTPUT) {
-      Serial.println("SD card initialization failed!");
-    }
-  }else {
-    if (DEBUG_SERIAL_OUTPUT) {
-      Serial.println("SD card initialized.");
-    }
-  }
   
-
   // init pulse output
   pinMode(en_PUL1, OUTPUT);
   digitalWrite(en_PUL1, LOW);
@@ -278,6 +305,101 @@ void setup() {
   SSD1X06::displayString6x8(7, 50, F("2.46"), 0);
   SSD1X06::displayString6x8(7, 100, F("2.51"), 0);
   delay(1500);  // start up message
+
+
+  // init sd card reader
+  pinMode(SD_Reader_CS_pin, OUTPUT);
+
+  if (!SD.begin(SD_Reader_CS_pin)) {
+    sd_ready = false;
+    if (DEBUG_SERIAL_OUTPUT) {
+      Serial.println("SD card initialization failed!");
+    }
+  }else {
+    sd_ready = true;
+    if (DEBUG_SERIAL_OUTPUT) {
+      Serial.println("SD card initialized.");
+    }
+  }
+
+  delay(1000);
+  // init config
+  if (sd_ready) {
+    if (SD.exists("confJson.txt")) {
+      if (DEBUG_SERIAL_OUTPUT) {
+        Serial.println("confJson.txt exists");
+      }
+      File configJson = SD.open("confJson.txt", FILE_READ);
+      DynamicJsonDocument doc(1024);
+      DeserializationError error = deserializeJson(doc, configJson);
+      if (error) {
+        if (DEBUG_SERIAL_OUTPUT) {
+          Serial.print("deserializeJson() failed: ");
+          Serial.println(error.c_str());
+        }
+        configJson.close(); 
+        return; 
+      }
+      configJson.close(); //close first after read
+
+      folderNumber = doc["folderNumber"].as<int>() + 1;
+      doc["folderNumber"] = folderNumber; 
+
+      // remove previous conf
+      SD.remove("confJson.txt"); 
+      
+      // re-open the file to write
+      configJson = SD.open("confJson.txt", FILE_WRITE);
+      if (!configJson) {
+        if (DEBUG_SERIAL_OUTPUT) {
+          Serial.println("Failed to open confJson.txt for writing");
+        }
+        return; 
+      }
+
+      serializeJson(doc, configJson);
+      configJson.close(); 
+
+      if (DEBUG_SERIAL_OUTPUT) {
+        Serial.print("confJson.txt updated with new folder number: ");
+        Serial.println(folderNumber);
+      }
+      
+    } else {
+      // no config file, create default one
+      DynamicJsonDocument doc(1024);
+      doc["folderNumber"] = 1;
+      
+      File configJson = SD.open("confJson.txt", FILE_WRITE);
+      if (!configJson) {
+        if (DEBUG_SERIAL_OUTPUT) {
+          Serial.println("Failed to create confJson.txt");
+        }
+        return; 
+      }
+      serializeJson(doc, configJson);
+      folderNumber = 1;
+      configJson.close(); 
+
+      if (DEBUG_SERIAL_OUTPUT) {
+        Serial.println("confJson.txt created with folder number 1.");
+      }
+    }
+
+    writeDefaultDataCSV();
+
+  } else {
+    frame[0] = 0xe72856e5;
+    frame[1] = 0x2852e770;
+    frame[2] = 0x00000000;
+    matrix.loadFrame(frame);
+    return;
+  }
+
+  frame[0] = 0x39245445;
+  frame[1] = 0x84543920;
+  frame[2] = 0x00000000;
+  matrix.loadFrame(frame);
 }
 
 uint8_t refresh; //refresh counter for oled display
@@ -356,10 +478,145 @@ void loop() {
   if (mem_record_flag) {
     scanIndex++;
     mem_record_flag = false;
+    // better progress bar
+
+    double progress_percentage = (double)scanIndex / scansPerPeriod;
+    progress_percentage *= 100;
+
+    if (DEBUG_SERIAL_OUTPUT) {
+      Serial.print("progress_percentage: ");
+      Serial.println(progress_percentage);
+    }
+
+    if (0 <= progress_percentage && progress_percentage <= 10) {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x4;
+        frame[2] = 0x00e00400;
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x4;
+        frame[2] = 0x00e00400;
+      }
+      
+    } else if (10 < progress_percentage && progress_percentage <= 20) {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x2;
+        frame[2] = 0x00f00200;
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x2;
+        frame[2] = 0x00700200;
+      }
+
+    } else if (20 < progress_percentage && progress_percentage <= 30) {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x1;
+        frame[2] = 0x00f80100; 
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x1;
+        frame[2] = 0x00b80100; 
+      }
+      
+    } else if (30 < progress_percentage && progress_percentage <= 40) {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x80fc0080;
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x805c0080;
+      }
+
+    } else if (40 < progress_percentage && progress_percentage <= 50) {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x40fe0040;        
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x40ae0040;  
+      }
+
+    } else if (50 < progress_percentage && progress_percentage <= 60) {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x20ff0020;        
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x20570020;  
+      }
+
+    } else if (60 < progress_percentage && progress_percentage <= 70) {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x10ff8010;        
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x10ab8010;  
+      }
+
+    } else if (70 < progress_percentage && progress_percentage <= 80) {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x08ffc008;        
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x0855c008;   
+      }
+
+    } else if (80 < progress_percentage && progress_percentage <= 90) {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x04ffe004;        
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x04aae004; 
+      }
+
+    } else {
+      if (sd_ready) {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x02fff002;        
+      } else {
+        frame[1] &= 0xfffffff0;
+        frame[1] |= 0x0;
+        frame[2] = 0x02557002;   
+      }
+
+    }
+    matrix.loadFrame(frame);
   }
 
   if (scanIndex >= scansPerPeriod) { 
-    writeToSDCard(lastScanTime); 
+    if (sd_ready) {
+      frame[1] |= 0xf;
+      frame[2] = 0xffffffff;
+      matrix.loadFrame(frame);
+      writeToSDCard(lastScanTime); 
+      frame[1] &= 0xfffffff0;
+      frame[2] = 0x00000000;
+      matrix.loadFrame(frame);
+
+    } else {
+      if (DEBUG_SERIAL_OUTPUT) {
+        Serial.println("bypass sd card");
+      }
+    }
     scanIndex = 0; 
   }
 
@@ -509,24 +766,59 @@ uint8_t NRF24L01_Reset() {
   return (status1 == status2 && (status1 & 0x0f) == 0x0e);
 }
 
-
-
-
-void writeToSDCard(unsigned long totalMilSec) {
-  // SD_Reader_CS_off;
-  unsigned long totalSec = totalMilSec / 1000;
-  int minutes = (totalSec / 60);
-  int seconds = totalSec % 60;
-  String fileName = String(minutes) + "m" + String(seconds) + "s.csv";
-  File dataFile = SD.open(fileName, FILE_WRITE);
-
-    if (dataFile) {
+void writeDefaultDataCSV() {
+  String folderName = "Folder" + String(folderNumber);
+  if (!SD.exists(folderName.c_str())) {
+    SD.mkdir(folderName.c_str());
+  }
+  String filePath = folderName + "/DATA.CSV";
+  File dataFile = SD.open(filePath.c_str(), FILE_WRITE);
+  if (dataFile) {
     dataFile.print("Time (ms)");
     for (int channel = 0; channel < CHANNELS; channel++) {
       dataFile.print(", Channel ");
       dataFile.print(channel);
     }
     dataFile.println(); 
+    dataFile.close();
+    if (DEBUG_SERIAL_OUTPUT) {
+      Serial.print(filePath.c_str());
+      Serial.println("   Default Data saved.");
+    }
+  } else {
+    if (DEBUG_SERIAL_OUTPUT) {
+      Serial.println("   Error opening file.");
+    }
+  }
+}
+
+void writeToSDCard(unsigned long totalMilSec) {
+  String folderName = "Folder" + String(folderNumber);
+  if (!SD.exists(folderName.c_str())) {
+    SD.mkdir(folderName.c_str());
+  }
+
+  // if you want data logged into different files
+
+  // unsigned long totalSec = totalMilSec / 1000;
+  // int minutes = totalSec / 60;
+  // int seconds = totalSec % 60;
+  // char fileName[15];
+  // sprintf(fileName, "%04dM%02dS.csv", minutes, seconds);
+  // String filePath = folderName + "/" + String(fileName);
+
+  // combine all data into one file
+  String filePath = folderName + "/DATA.CSV";
+
+  File dataFile = SD.open(filePath.c_str(), FILE_WRITE);
+  
+  if (dataFile) {
+    // dataFile.print("Time (ms)");
+    // for (int channel = 0; channel < CHANNELS; channel++) {
+    //   dataFile.print(", Channel ");
+    //   dataFile.print(channel);
+    // }
+    // dataFile.println(); 
 
     for (int i = 0; i < scansPerPeriod; i++) {
       dataFile.print(scanTimes[i]);
@@ -539,6 +831,7 @@ void writeToSDCard(unsigned long totalMilSec) {
     }
     dataFile.close();
     if (DEBUG_SERIAL_OUTPUT) {
+      Serial.print(filePath.c_str());
       Serial.println("Data saved.");
     }
   } else {
@@ -546,5 +839,4 @@ void writeToSDCard(unsigned long totalMilSec) {
       Serial.println("Error opening file.");
     }
   }
-  // SD_Reader_CS_on;
 }
