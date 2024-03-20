@@ -22,6 +22,7 @@
 // 2. data logging rate is 1 file/30 seconds, theoretically limit of file amount in one folder is 65532, which is about 22.7 days
 // 3. millis() will be overflow by about 49.7 days. (https://www.arduino.cc/reference/en/language/functions/time/millis/)
 // 4. max sd card size is 32GB, average file size is 30KB, fill all sd card space will take about 370.3 days
+// 5. the max size of one file in FAT32 is 4GB, it will take about 46.2 days to reach the limit.
 
 // due to the delay of writing to a sd card, it is possible that the entries in the file record are discontinuous, that is, adjacent entries are longer than 1 second
 // due to the insufficent amount of memory in arduino uno r4, the sd card is heavily used over 2 time per minute, please keep an eye on the status of sd card, replace it if needed.
