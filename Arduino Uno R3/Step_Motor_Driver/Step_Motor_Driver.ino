@@ -1,4 +1,4 @@
- // modified by Xinbo Qu, Project AAA. Feb 2024. All rights Reserved.
+// modified by Xinbo Qu, Project AAA. Feb 2024. All rights Reserved.
 // modify log: get average signal intensity value for both real nRF24L01 data and the area persentage on the SSD1306 OLED screen.
 // modify PORTB reg operation into specific pin operation to adapt new Uno R4. 
 // modify _NOP() into __asm__ __volatile__("nop") to achieve same effect of delay for a very short time period
@@ -7,7 +7,7 @@
 // update: https://www.arduino.cc/reference/en/language/functions/time/delaymicroseconds
 // delaymicroseconds are suitable for 3-16383 microseconds
 
-// update: add dip switch control (pulse override), update debouncer design, current priority is pulse1 > pulse2 > pulse3, one output a time. 
+// update: add DIP switch control (pulse override), update debouncer design, current priority is pulse 1 > pulse 2 > pulse 3, one output a time. 
 // NOTE: adjust the minimum_pulse_delay and maximum_pulse_delay to fit your motor driver pulse speed. the range should from 3 to 16383
 
 
@@ -98,33 +98,38 @@ boolean setEN = LOW;          // Set default Enable status
  
 // Interrupt Handler
 void revmotor (){
+  // if press button, reverse the status of direction
   setdir = !setdir;
 }
 
 void enswitch (){
+  // if press button, reverse the status of enable
   setEN = !setEN;
 }
  
 
 void setup() {
-  // 
+  // init r4 input pins
+  pinMode (en_PUL1, INPUT);
+  pinMode (en_PUL2, INPUT);
+  pinMode (en_PUL3, INPUT);
+  
+  // init driver output pins with default status
   pinMode (driverPUL1, OUTPUT);
   digitalWrite(driverPUL1,LOW);
-  pinMode (en_PUL1, INPUT);
   pinMode (driverPUL2, OUTPUT);
   digitalWrite(driverPUL2,LOW);
-  pinMode (en_PUL2, INPUT);
   pinMode (driverPUL3, OUTPUT);
   digitalWrite(driverPUL3,LOW);
-  pinMode (en_PUL3, INPUT);
   pinMode (driverDIR, OUTPUT);
   digitalWrite(driverDIR,LOW);
-
+  
+  // init lights
   pinMode (en_PUL_LIGHT, OUTPUT);
   digitalWrite(en_PUL_LIGHT,LOW);
   pinMode (dir_LIGHT, OUTPUT);
   digitalWrite(driverDIR,LOW);
-
+  
   // set interrupt for buttons
   attachInterrupt(digitalPinToInterrupt(reverseSwitch), revmotor, FALLING);
   attachInterrupt(digitalPinToInterrupt(enSwitch), enswitch, FALLING);
@@ -139,6 +144,7 @@ void setup() {
 void loop() {
     // map the delay with Potentiometer input
     pd = map((analogRead(spd)), 0, 1023, maximum_pulse_delay, minimum_pulse_delay);
+    
     // output direction, set direction light/master light
     digitalWrite(driverDIR,setdir);
     digitalWrite(dir_LIGHT,setdir);
