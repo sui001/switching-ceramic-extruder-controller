@@ -95,18 +95,24 @@
 unsigned int pd = 5000;       // Pulse Delay period
 boolean setdir = LOW;         // Set default Direction
 boolean setEN = LOW;          // Set default Enable status
- 
+
 // Interrupt Handler
 void revmotor (){
   // if press button, reverse the status of direction
-  setdir = !setdir;
+  delay(10);
+  if (digitalRead(reverseSwitch) == LOW) {
+    setdir = !setdir;
+  }
 }
 
 void enswitch (){
   // if press button, reverse the status of enable
-  setEN = !setEN;
+  delay(10);
+  if (digitalRead(enSwitch) == LOW) {
+    setEN = !setEN;
+  }
 }
- 
+
 
 void setup() {
   // init r4 input pins
