@@ -9,6 +9,7 @@
 
 // update: add DIP switch control (pulse override), update debouncer design, current priority is pulse 1 > pulse 2 > pulse 3, one output a time. 
 // NOTE: adjust the minimum_pulse_delay and maximum_pulse_delay to fit your motor driver pulse speed. the range should from 3 to 16383
+// delay() is not working in interupt callback function, use delayMicroseconds instead.
 
 
 /*
@@ -99,7 +100,7 @@ boolean setEN = LOW;          // Set default Enable status
 // Interrupt Handler
 void revmotor (){
   // if press button, reverse the status of direction
-  delay(10);
+  delayMicroseconds(10000);
   if (digitalRead(reverseSwitch) == LOW) {
     setdir = !setdir;
   }
@@ -107,7 +108,7 @@ void revmotor (){
 
 void enswitch (){
   // if press button, reverse the status of enable
-  delay(10);
+  delayMicroseconds(10000);
   if (digitalRead(enSwitch) == LOW) {
     setEN = !setEN;
   }
